@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Local Network Group Chat</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load PeerJS for WebRTC P2P communication -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        /* Apply Inter font and clean up default margins */
+        body { font-family: 'Inter', sans-serif; }
+        /* Style for the chat box, allowing scroll */
+        #chat-messages {
+            height: calc(100% - 130px); /* Adjust based on input height */
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+        /* Style for P2P network messages (system events) */
+        .system-message {
+            font-style: italic;
+            color: #6b7280; /* gray-500 */
+            text-align: center;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+        }
+        /* Style for Chatty's messages */
+        .chatty-message .bubble {
+            background-color: #fca5a5; /* Red-300 for Chatty */
+            color: #881a1a; /* Darker red text */
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen flex flex-col">
+
+    <div id="connection-setup" class="p-6 bg-white shadow-lg rounded-xl max-w-lg w-full mx-auto my-10 transition-all">
+        <h1 class="text-3xl font-extrabold text-blue-600 mb-4 text-center">LAN Peer Chat + AI</h1>
+        
+        <div class="mb-4">
+            <label for="username" class="block text-sm font-medium text-gray-700">Choose Username</label>
+            <input type="text" id="username" placeholder="Your Chat Name" value="User-01"
+                   class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+        </div>
+
+        <!-- UPDATED: Cohere API Key Input Field -->
+        <div class="mb-4">
+            <label for="api-key" class="block text-sm font-medium text-gray-700">Cohere API Key (Required for Chatty)</label>
+            <input type="password" id="api-key" placeholder="Paste your Cohere API Key here"
+                   class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-purple-500 focus:border-purple-500">
+            <p class="text-xs text-gray-500 mt-1">Chatty will not work without a valid Cohere API key.</p>
+        </div>
+        <!-- END UPDATED -->
+
+        <div class="space-y-4">
+            <div id="local-peer-info" class="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+                <p class="font-semibold text-blue-800">Your Local Peer ID:</p>
+                <p id="local-id-display" class="break-words text-blue-700 font-mono"></p>
+            </div>
+
+            <label for="remote-id" class="block text-sm font-medium text-gray-700">Connect to Peer ID (Optional)</label>
+            <div class="flex space-x-2">
+                <input type="text" id="remote-id" placeholder="Paste another user's ID here"
+                       class="flex-1 px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
+                <button id="connect-button" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-200">
+                    Connect
+                </button>
+            </div>
+
+            <button id="join-chat-button" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg shadow-lg transition duration-200">
+                Start/Join Chat Network
+            </button>
+        </div>
+        <p id="status-message" class="text-center mt-4 text-sm text-red-500 font-medium"></p>
+    </div>
+
+    <!-- Main Chat Interface (Hidden initially) -->
+    <div id="chat-interface" class="hidden flex-1 grid grid-cols-1 md:grid-cols-4 gap-4 p-4 max-w-7xl w-full mx-auto">
+
+        <!-- User List (Sidebar) -->
+        <div class="md:col-span-1 bg-white p-4 rounded-xl shadow-lg flex flex-col h-full">
+            <h2 class="text-xl font-bold mb-3 text-gray-800 border-b pb-2">Active Users (<span id="user-count">0</span>)</h2>
+            <div id="user-list" class="space-y-2 overflow-y-auto flex-1">
+                <!-- User list items will be injected here -->
+            </div>
+            <button id="disconnect-button" class="mt-4 w-full bg-red-500 hover:bg-red-600 text-white font-bold py-2 rounded-lg shadow-md transition duration-200">
+                Disconnect
+            </button>
+        </div>
+
+        <!-- Chat Window -->
+        <div class="md:col-span-3 bg-white p-4 rounded-xl shadow-lg flex flex-col h-[80vh] md:h-full">
+            <h2 class="text-xl font-bold mb-3 text-gray-800 border-b pb-2">Group Messages</h2>
+            <p class="text-sm text-gray-500 mb-2 italic">To talk to the AI, start your message with: <span class="font-mono bg-gray-100 p-1 rounded">chatty,</span></p>
+
+            <!-- Message Display Area -->
+            <div id="chat-messages" class="flex-1 mb-4 p-2 space-y-3">
+                <!-- Messages will be injected here -->
+            </div>
+
+            <!-- Message Input Area -->
+            <div class="flex space-x-2 border-t pt-3">
+                <input type="text" id="message-input" placeholder="Type a message..."
+                       class="flex-1 px-4 py-3 border border-gray-300 rounded-lg shadow-inner focus:ring-blue-500 focus:border-blue-500"
+                       disabled>
+                <button id="send-button" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition duration-200"
+                        disabled>
+                    Send
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Modal/Message Box (Replaces alert()) -->
+    <div id="modal-container" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden items-center justify-center p-4 z-50">
+        <div class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full">
+            <h3 id="modal-title" class="text-xl font-bold text-gray-800 mb-2"></h3>
+            <p id="modal-content" class="text-gray-600 mb-4"></p>
+            <button id="modal-close-button" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg">
+                OK
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- Globals and Initialization ---
+
+        // PeerJS setup (requires a signaling server, which PeerJS provides by default)
+        let peer = null;
+        let userId = null;
+        let userName = '';
+        const connections = new Map(); // Key: Remote Peer ID, Value: PeerJS DataConnection object
+        const activeUsers = new Map(); // Key: Remote Peer ID, Value: { name: '...', peerId: '...' }
+        let isChatActive = false;
+
+        // AI Chat Context Storage
+        // Stores up to 50 messages for conversational context with Chatty.
+        let chatHistory = [];
+        const MAX_CONTEXT_MESSAGES = 50;
+        const CHATTY_PREFIX = "chatty,";
+        const CHATTY_SENDER = "Chatty";
+
+        // Configuration
+        const MESSAGE_TYPES = {
+            CHAT: 'chat',
+            USER_JOINED: 'user_joined',
+            USER_LEFT: 'user_left',
+            USER_LIST_GOSSIP: 'user_list_gossip',
+            AI_RESPONSE: 'ai_response' // New message type for AI response
+        };
+
+        // DOM elements
+        const elements = {
+            setup: document.getElementById('connection-setup'),
+            chatInterface: document.getElementById('chat-interface'),
+            usernameInput: document.getElementById('username'),
+            apiKeyInput: document.getElementById('api-key'), // <-- Cohere API Key
+            localIdDisplay: document.getElementById('local-id-display'),
+            remoteIdInput: document.getElementById('remote-id'),
+            connectButton: document.getElementById('connect-button'),
+            joinChatButton: document.getElementById('join-chat-button'),
+            statusMessage: document.getElementById('status-message'),
+            chatMessages: document.getElementById('chat-messages'),
+            messageInput: document.getElementById('message-input'),
+            sendButton: document.getElementById('send-button'),
+            userList: document.getElementById('user-list'),
+            userCount: document.getElementById('user-count'),
+            disconnectButton: document.getElementById('disconnect-button'),
+            modalContainer: document.getElementById('modal-container'),
+            modalTitle: document.getElementById('modal-title'),
+            modalContent: document.getElementById('modal-content'),
+            modalCloseButton: document.getElementById('modal-close-button'),
+        };
+
+        // --- Utility Functions ---
+
+        /**
+         * Custom modal display (replaces alert/confirm)
+         * @param {string} title
+         * @param {string} message
+         */
+        function showModal(title, message) {
+            elements.modalTitle.textContent = title;
+            elements.modalContent.textContent = message;
+            elements.modalContainer.classList.remove('hidden');
+            elements.modalContainer.classList.add('flex');
+        }
+
+        elements.modalCloseButton.onclick = () => {
+            elements.modalContainer.classList.add('hidden');
+            elements.modalContainer.classList.remove('flex');
+        };
+
+        /**
+         * Stores a message in the local history array for AI context (in Gemini format internally).
+         * @param {string} senderName
+         * @param {string} text
+         */
+        function storeMessageForContext(senderName, text) {
+            if (senderName === 'System') return; 
+
+            // Use 'user' for anyone who is not Chatty, 'model' for Chatty
+            const role = senderName === CHATTY_SENDER ? 'model' : 'user';
+
+            const historyEntry = {
+                role: role,
+                parts: [{ text: `[${senderName}]: ${text}` }]
+            };
+
+            chatHistory.push(historyEntry);
+
+            // Trim oldest messages if the history exceeds the max limit
+            if (chatHistory.length > MAX_CONTEXT_MESSAGES) {
+                chatHistory.splice(0, chatHistory.length - MAX_CONTEXT_MESSAGES);
+            }
+        }
+
+        /**
+         * Renders a message in the chat window.
+         * @param {string} senderName
+         * @param {string} text
+         * @param {string} type - 'chat', 'system', or 'ai_response'
+         */
+        function renderMessage(senderName, text, type = 'chat') {
+            const messageDiv = document.createElement('div');
+
+            if (type === 'system') {
+                messageDiv.className = 'system-message';
+                messageDiv.innerHTML = text;
+            } else {
+                storeMessageForContext(senderName, text); // Store for AI context
+
+                // Determine styling based on sender
+                const isLocal = senderName === userName;
+                const isChatty = senderName === CHATTY_SENDER;
+
+                const alignment = isLocal ? 'justify-end' : 'justify-start';
+                let bubbleClasses = '';
+                let containerClasses = '';
+
+                if (isLocal) {
+                    bubbleClasses = 'bg-blue-500 text-white';
+                } else if (isChatty) {
+                    // Custom style for Chatty
+                    containerClasses = 'chatty-message';
+                    bubbleClasses = 'bubble';
+                } else {
+                    // Style for remote user
+                    bubbleClasses = 'bg-gray-200 text-gray-800';
+                }
+
+                messageDiv.className = `flex ${alignment} ${containerClasses}`;
+                messageDiv.innerHTML = `
+                    <div class="max-w-xs md:max-w-md lg:max-w-lg">
+                        <span class="block text-xs font-semibold ${isLocal ? 'text-right' : 'text-left'} text-gray-500 mb-1">${senderName}</span>
+                        <div class="px-4 py-2 rounded-xl ${bubbleClasses} shadow-md break-words whitespace-pre-wrap">
+                            ${text}
+                        </div>
+                    </div>
+                `;
+            }
+
+            elements.chatMessages.appendChild(messageDiv);
+            elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight; // Auto-scroll to bottom
+        }
+
+        /**
+         * Updates the list of active users in the sidebar.
+         */
+        function updateActiveUserList() {
+            elements.userList.innerHTML = '';
+            elements.userCount.textContent = activeUsers.size;
+
+            // Sort users alphabetically
+            const sortedUsers = Array.from(activeUsers.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+            sortedUsers.forEach(user => {
+                const userDiv = document.createElement('div');
+                const statusDot = user.isLocal ? 'bg-green-500' : 'bg-green-500'; // All connected peers are 'online'
+                const statusText = user.isLocal ? '(You)' : '';
+
+                userDiv.className = 'flex items-center space-x-3 p-2 bg-gray-50 rounded-lg hover:bg-gray-100 transition';
+                userDiv.innerHTML = `
+                    <span class="w-2 h-2 ${statusDot} rounded-full"></span>
+                    <span class="font-medium text-gray-800 truncate">${user.name}</span>
+                    <span class="text-xs text-gray-500 ml-auto">${statusText}</span>
+                `;
+                elements.userList.appendChild(userDiv);
+            });
+        }
+
+        /**
+         * Broadcasts a message object to all established connections.
+         * @param {object} message
+         */
+        function broadcast(message) {
+            const data = JSON.stringify(message);
+            connections.forEach(conn => {
+                if (conn.open) {
+                    conn.send(data);
+                }
+            });
+        }
+
+        /**
+         * Sends a join/list update message to a specific peer.
+         * @param {PeerJS.DataConnection} conn
+         * @param {object} message
+         */
+        function sendToPeer(conn, message) {
+            if (conn && conn.open) {
+                conn.send(JSON.stringify(message));
+            }
+        }
+
+        // --- P2P Connection and Data Handling ---
+
+        /**
+         * Handles incoming data from a connected peer.
+         * @param {object} data
+         * @param {string} senderId
+         */
+        function handleReceivedData(data, senderId) {
+            try {
+                const message = JSON.parse(data);
+
+                switch (message.type) {
+                    case MESSAGE_TYPES.CHAT:
+                        renderMessage(message.senderName, message.text);
+                        break;
+                    
+                    case MESSAGE_TYPES.AI_RESPONSE:
+                        // AI response originated from another peer
+                        renderMessage(CHATTY_SENDER, message.text, MESSAGE_TYPES.AI_RESPONSE);
+                        break;
+
+                    case MESSAGE_TYPES.USER_JOINED:
+                        // A new user has joined the network via one of our peers
+                        if (!activeUsers.has(message.user.peerId)) {
+                            activeUsers.set(message.user.peerId, { name: message.user.name, peerId: message.user.peerId });
+                            renderMessage('System', `${message.user.name} has joined the chat.`, 'system');
+                            updateActiveUserList();
+
+                            // Flood-fill / Gossip: Try to connect to the new user.
+                            if (message.user.peerId !== userId && !connections.has(message.user.peerId)) {
+                                connectToPeer(message.user.peerId);
+                            }
+                        }
+                        // Also broadcast the join message to ensure all peers get the news (gossip)
+                        broadcast(message);
+                        break;
+
+                    case MESSAGE_TYPES.USER_LEFT:
+                        // A user has left the network
+                        if (activeUsers.has(message.user.peerId)) {
+                            const user = activeUsers.get(message.user.peerId);
+                            activeUsers.delete(message.user.peerId);
+                            renderMessage('System', `${user.name} has left the chat.`, 'system');
+                            updateActiveUserList();
+                        }
+                        // Also broadcast the leave message to ensure all peers update their lists
+                        broadcast(message);
+                        break;
+
+                    case MESSAGE_TYPES.USER_LIST_GOSSIP:
+                        // This message is sent upon connection to sync user lists
+                        Object.values(message.users).forEach(remoteUser => {
+                            if (remoteUser.peerId !== userId && !activeUsers.has(remoteUser.peerId)) {
+                                activeUsers.set(remoteUser.peerId, remoteUser);
+                            }
+                        });
+
+                        // Now, ensure we connect to everyone in the received list (mesh)
+                        Object.values(message.users).forEach(remoteUser => {
+                            if (remoteUser.peerId !== userId && !connections.has(remoteUser.peerId)) {
+                                connectToPeer(remoteUser.peerId);
+                            }
+                        });
+
+                        // Add the new connecting user (the sender) to our list
+                        if (!activeUsers.has(senderId)) {
+                            activeUsers.set(senderId, { name: message.senderName, peerId: senderId });
+                            renderMessage('System', `${message.senderName} has joined the chat.`, 'system');
+                        }
+
+                        updateActiveUserList();
+                        break;
+                }
+            } catch (e) {
+                console.error('Error parsing received data:', e, data);
+            }
+        }
+
+        /**
+         * Sets up listeners for a new connection (either incoming or outgoing).
+         * @param {PeerJS.DataConnection} conn
+         * @param {boolean} isIncoming - True if it's an incoming connection, false if outgoing
+         */
+        function setupConnectionListeners(conn, isIncoming) {
+            const remotePeerId = conn.peer;
+
+            conn.on('open', () => {
+                connections.set(remotePeerId, conn);
+                console.log(`Connection established with peer: ${remotePeerId}. Incoming: ${isIncoming}`);
+
+                const userListGossip = {
+                    type: MESSAGE_TYPES.USER_LIST_GOSSIP,
+                    senderName: userName,
+                    users: Object.fromEntries(activeUsers)
+                };
+
+                // 1. Initial Handshake / User List Gossip
+                if (!isIncoming) {
+                    // (Peer A - Initiator) Send our list to the remote peer (B).
+                    sendToPeer(conn, userListGossip);
+
+                    // 2. Announce self to the entire network via this peer (flood-fill)
+                    const joinMessage = {
+                        type: MESSAGE_TYPES.USER_JOINED,
+                        user: { name: userName, peerId: userId }
+                    };
+                    broadcast(joinMessage);
+                } else {
+                    // (Peer B - Receiver) Send our full user list back to the initiator (A) to complete the two-way sync.
+                    sendToPeer(conn, userListGossip);
+                }
+            });
+
+            conn.on('data', data => {
+                handleReceivedData(data, remotePeerId);
+            });
+
+            conn.on('close', () => {
+                handlePeerDisconnect(remotePeerId);
+            });
+
+            conn.on('error', err => {
+                console.error(`Connection error with ${remotePeerId}:`, err);
+                // Attempt to remove the user gracefully if the connection errors out
+                handlePeerDisconnect(remotePeerId);
+            });
+        }
+
+        /**
+         * Initiates a connection to a remote peer ID.
+         * @param {string} remoteId
+         */
+        function connectToPeer(remoteId) {
+            if (remoteId === userId) {
+                showModal('Error', 'You cannot connect to your own Peer ID.');
+                return;
+            }
+            if (connections.has(remoteId)) {
+                showModal('Error', `Already connected to peer: ${remoteId}.`);
+                return;
+            }
+
+            elements.statusMessage.textContent = `Attempting to connect to ${remoteId}...`;
+
+            try {
+                // peer.connect() creates an outgoing connection
+                const conn = peer.connect(remoteId, { reliable: true });
+                setupConnectionListeners(conn, false);
+                elements.statusMessage.textContent = 'Connection attempt sent.';
+            } catch (e) {
+                console.error('Connection initiation failed:', e);
+                elements.statusMessage.textContent = 'Connection initiation failed. Check the ID and try again.';
+                showModal('Connection Failed', 'Could not establish connection. Ensure the remote peer is online and their ID is correct.');
+            }
+        }
+
+        /**
+         * Handles the graceful removal of a peer.
+         * @param {string} remotePeerId
+         */
+        function handlePeerDisconnect(remotePeerId) {
+            if (connections.has(remotePeerId)) {
+                connections.delete(remotePeerId);
+            }
+
+            if (activeUsers.has(remotePeerId)) {
+                const user = activeUsers.get(remotePeerId);
+                activeUsers.delete(remotePeerId);
+
+                renderMessage('System', `${user.name} lost connection.`, 'system');
+                updateActiveUserList();
+
+                // Announce to the rest of the network that this peer has left (gossip)
+                const leftMessage = {
+                    type: MESSAGE_TYPES.USER_LEFT,
+                    user: { name: user.name, peerId: user.peerId }
+                };
+                broadcast(leftMessage);
+            }
+        }
+
+
+        // --- AI Chatty Functionality (Cohere) ---
+
+        /**
+         * Calls the Cohere Chat API using the chat history as context.
+         * @param {string} userQuery - The specific question asked to Chatty.
+         * @param {HTMLElement} typingIndicator - The temporary message element to update.
+         */
+        async function callCohereAPI(userQuery, typingIndicator) {
+            const API_KEY = elements.apiKeyInput.value.trim();
+            if (!API_KEY) {
+                typingIndicator.remove();
+                showModal('API Key Required', 'Please enter your Cohere API Key to use "Chatty".');
+                return;
+            }
+
+            const SYSTEM_PROMPT = "You are Chatty, an AI chatbot participating in a friendly group chat. You analyze the previous messages to maintain context. Keep your responses friendly and concise.";
+            const COHERE_API_URL = "https://api.cohere.ai/v1/chat";
+            const MODEL_NAME = "command-a-03-2025"; // A conversational model
+
+            // Transform internal chatHistory (Gemini format) to Cohere's expected format
+            // The last message is the current user's message and goes into the 'message' field, not history.
+            const cohereHistory = chatHistory.map(entry => {
+                const role = entry.role === 'user' ? 'USER' : 'CHATBOT';
+                // The message text contains the [Name]: prefix from storeMessageForContext
+                const message = entry.parts[0].text;
+                return { role, message };
+            });
+
+            const payload = {
+                message: `[${userName}]: ${userQuery}`, // Current user question goes in 'message'
+                chat_history: cohereHistory,             // Previous turns go in 'chat_history'
+                model: MODEL_NAME,
+                system_prompt: SYSTEM_PROMPT,
+                stream: false,
+                // connector options can be added here if grounding is needed, but we'll stick to basic chat
+            };
+
+            let responseText = "Sorry, Chatty couldn't get a response from the AI.";
+
+            try {
+                const response = await fetch(COHERE_API_URL, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${API_KEY}`
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                
+                if (response.ok && result.text) {
+                    responseText = result.text;
+                } else {
+                    // Handle API errors (e.g., invalid key, rate limit)
+                    console.error("Cohere API Error:", result);
+                    const errorMessage = result.message || JSON.stringify(result);
+                    responseText = `Error: The Cohere API returned an error: ${errorMessage}`;
+                }
+
+            } catch (error) {
+                console.error("Fetch error calling Cohere API:", error);
+                responseText = `Network Error: Could not connect to the Cohere service. Details: ${error.message}`;
+            } finally {
+                // Remove the "Chatty is typing..." message
+                typingIndicator.remove();
+
+                // Broadcast the final AI response to the entire network
+                const aiMessage = {
+                    type: MESSAGE_TYPES.AI_RESPONSE,
+                    text: responseText
+                };
+
+                // Render locally and then broadcast
+                renderMessage(CHATTY_SENDER, responseText, MESSAGE_TYPES.AI_RESPONSE);
+                broadcast(aiMessage);
+            }
+        }
+
+
+        // --- Main App Flow ---
+
+        /**
+         * Initializes PeerJS and sets up global listeners.
+         */
+        function initializeP2P() {
+            // Check for username
+            userName = elements.usernameInput.value.trim();
+            if (userName.length < 2) {
+                showModal('Missing Username', 'Please enter a username of at least 2 characters.');
+                return;
+            }
+
+            // Hide setup, show chat interface
+            elements.setup.classList.add('hidden');
+            elements.chatInterface.classList.remove('hidden');
+            elements.messageInput.disabled = false;
+            elements.sendButton.disabled = false;
+            isChatActive = true;
+
+            // Start PeerJS (passing no ID makes it generate a random one)
+            peer = new Peer();
+
+            peer.on('open', id => {
+                userId = id;
+                elements.localIdDisplay.textContent = id;
+                elements.statusMessage.textContent = 'PeerJS connected! Share your ID to connect.';
+
+                // Add self to the active users list
+                activeUsers.set(userId, { name: userName, peerId: userId, isLocal: true });
+                updateActiveUserList();
+
+                renderMessage('System', `Welcome, ${userName}! Your ID is ${userId}. Share it with friends to connect.`, 'system');
+
+                // If a remote ID was provided, attempt to connect automatically
+                const remoteId = elements.remoteIdInput.value.trim();
+                if (remoteId) {
+                    connectToPeer(remoteId);
+                }
+            });
+
+            // Incoming connection listener
+            peer.on('connection', conn => {
+                console.log(`Incoming connection request from: ${conn.peer}`);
+                setupConnectionListeners(conn, true);
+            });
+
+            peer.on('error', err => {
+                console.error('PeerJS Error:', err);
+                showModal('P2P Error', `A network error occurred. Check your network connection. Error: ${err.type}`);
+                elements.statusMessage.textContent = `P2P Error: ${err.type}`;
+            });
+
+            peer.on('disconnected', () => {
+                console.warn('PeerJS disconnected from server.');
+                if (isChatActive) {
+                    showModal('Server Disconnected', 'Lost connection to the PeerJS signaling server. Your P2P session might be unstable.');
+                }
+            });
+
+            peer.on('close', () => {
+                console.log('PeerJS instance closed.');
+                showModal('Disconnected', 'You have been disconnected from the network.');
+            });
+        }
+
+        /**
+         * Cleans up connections and resets the app state.
+         */
+        function disconnect() {
+            if (!peer) return;
+
+            // 1. Announce leaving to the remaining network
+            const leftMessage = {
+                type: MESSAGE_TYPES.USER_LEFT,
+                user: { name: userName, peerId: userId }
+            };
+            broadcast(leftMessage);
+
+            // 2. Close all connections
+            connections.forEach(conn => {
+                conn.close();
+            });
+            connections.clear();
+            activeUsers.clear();
+            chatHistory = []; // Clear chat history
+
+            // 3. Destroy the PeerJS instance
+            peer.destroy();
+            peer = null;
+            userId = null;
+            userName = '';
+            isChatActive = false;
+
+            // 4. Reset UI
+            elements.chatMessages.innerHTML = '';
+            elements.userList.innerHTML = '';
+            elements.userCount.textContent = '0';
+            elements.messageInput.disabled = true;
+            elements.sendButton.disabled = true;
+
+            elements.chatInterface.classList.add('hidden');
+            elements.setup.classList.remove('hidden');
+            elements.localIdDisplay.textContent = 'Generating...';
+            elements.statusMessage.textContent = 'Disconnected successfully.';
+        }
+
+        /**
+         * Sends a chat message or triggers the AI call.
+         */
+        function sendMessage() {
+            const rawText = elements.messageInput.value.trim();
+            if (!rawText) return;
+
+            elements.messageInput.value = ''; // Clear input immediately
+
+            // Check for the AI prefix
+            if (rawText.toLowerCase().startsWith(CHATTY_PREFIX)) {
+                const userQuery = rawText.substring(CHATTY_PREFIX.length).trim();
+
+                // 1. Display the user's question locally (as a regular chat message)
+                renderMessage(userName, rawText);
+
+                // 2. Display a "Chatty is typing..." indicator
+                const typingIndicator = document.createElement('div');
+                typingIndicator.innerHTML = '<div class="system-message">Chatty is thinking...</div>';
+                elements.chatMessages.appendChild(typingIndicator);
+                elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+
+                // 3. Disable input while waiting for the AI
+                elements.messageInput.disabled = true;
+                elements.sendButton.disabled = true;
+
+                // 4. Call the AI API
+                callCohereAPI(userQuery, typingIndicator).finally(() => {
+                    // Re-enable input regardless of success/failure
+                    elements.messageInput.disabled = false;
+                    elements.sendButton.disabled = false;
+                });
+
+            } else {
+                // Regular P2P chat message
+                const chatMessage = {
+                    type: MESSAGE_TYPES.CHAT,
+                    senderId: userId,
+                    senderName: userName,
+                    text: rawText
+                };
+
+                // Render locally (which also stores it for context)
+                renderMessage(userName, rawText);
+
+                // Broadcast to all peers
+                broadcast(chatMessage);
+            }
+        }
+
+        // --- Event Listeners ---
+
+        elements.joinChatButton.addEventListener('click', initializeP2P);
+        elements.connectButton.addEventListener('click', () => {
+            const remoteId = elements.remoteIdInput.value.trim();
+            if (peer && userId && remoteId) {
+                connectToPeer(remoteId);
+            } else {
+                showModal('Error', 'You must join the chat network first before connecting to another peer.');
+            }
+        });
+        elements.disconnectButton.addEventListener('click', disconnect);
+        elements.sendButton.addEventListener('click', sendMessage);
+        elements.messageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+    </script>
+
+</body>
+</html>

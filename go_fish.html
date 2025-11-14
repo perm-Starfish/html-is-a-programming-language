@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Go Fish - Single Player</title>
+  <style>
+    body {
+      margin: 0;
+      background: #1b2838;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #f5f7fa;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      height: 100vh;
+    }
+    h1 {
+      margin: 10px 0 4px;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+    #subtitle {
+      margin-bottom: 8px;
+      font-size: 0.9rem;
+      opacity: 0.8;
+    }
+    #controls {
+      margin-bottom: 6px;
+    }
+    #newGameBtn {
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(135deg, #4f46e5, #06b6d4);
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+      transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.12s ease;
+    }
+    #newGameBtn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      filter: brightness(1.05);
+    }
+    #newGameBtn:active {
+      transform: translateY(0);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+      filter: brightness(0.95);
+    }
+    #statusText {
+      margin-bottom: 6px;
+      font-size: 0.9rem;
+      text-align: center;
+      min-height: 1.2em;
+      max-width: 1000px;
+      padding: 0 10px;
+    }
+    canvas {
+      border-radius: 18px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.08);
+      background: radial-gradient(circle at top, #0f172a 0, #020617 55%, #020617 100%);
+    }
+  </style>
+</head>
+<body>
+  <h1>🎴 Go Fish</h1>
+  <div id="subtitle">Single Player vs Computer • Click one of your cards to ask for that rank</div>
+  <div id="controls">
+    <button id="newGameBtn">New Game</button>
+  </div>
+  <div id="statusText"></div>
+  <canvas id="gameCanvas" width="1000" height="600"></canvas>
+
+  <script>
+    // --- Card / Game Data ---
+    const ranks = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+    const suits = ["♠","♥","♦","♣"]; // just for looks
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const statusText = document.getElementById("statusText");
+
+    const CARD_W = 60;
+    const CARD_H = 90;
+    const CARD_SPACING = 14;
+
+    let deck = [];
+    let playerHand = [];
+    let computerHand = [];
+    let playerBooks = [];
+    let computerBooks = [];
+    let currentTurn = "player"; // "player" | "computer"
+    let gameOver = false;
+
+    // clickable zones for player's cards
+    let playerCardZones = [];
+
+    // --- Utility ---
+    function shuffle(array) {
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+      }
+      return array;
+    }
+
+    function createDeck() {
+      const d = [];
+      for (const r of ranks) {
+        for (const s of suits) {
+          d.push({ rank: r, suit: s });
+        }
+      }
+      return shuffle(d);
+    }
+
+    function dealCards(hand, count) {
+      for (let i = 0; i < count && deck.length > 0; i++) {
+        hand.push(deck.pop());
+      }
+    }
+
+    function drawCardToHand(hand) {
+      if (deck.length === 0) return null;
+      const card = deck.pop();
+      hand.push(card);
+      return card;
+    }
+
+    function groupByRank(hand) {
+      const map = {};
+      for (const c of hand) {
+        map[c.rank] = (map[c.rank] || []);
+        map[c.rank].push(c);
+      }
+      return map;
+    }
+
+    function removeCardsOfRank(hand, rank) {
+      const taken = [];
+      for (let i = hand.length - 1; i >= 0; i--) {
+        if (hand[i].rank === rank) {
+          taken.push(hand[i]);
+          hand.splice(i, 1);
+        }
+      }
+      return taken;
+    }
+
+    function checkForBooks(hand, booksArray) {
+      const grouped = groupByRank(hand);
+      let madeBook = false;
+      for (const r of Object.keys(grouped)) {
+        if (grouped[r].length === 4) {
+          removeCardsOfRank(hand, r);
+          booksArray.push(r);
+          madeBook = true;
+        }
+      }
+      return madeBook;
+    }
+
+    function isGameOver() {
+      const totalBooks = playerBooks.length + computerBooks.length;
+      if (totalBooks === 13) return true;
+      if (deck.length === 0 && playerHand.length === 0 && computerHand.length === 0) return true;
+      return false;
+    }
+
+    function endGameIfNeeded() {
+      if (!isGameOver()) return;
+      gameOver = true;
+      let message = "Game Over! ";
+      if (playerBooks.length > computerBooks.length) {
+        message += `You win! 🎉 (You: ${playerBooks.length} books, Computer: ${computerBooks.length})`;
+      } else if (playerBooks.length < computerBooks.length) {
+        message += `Computer wins. 🤖 (You: ${playerBooks.length} books, Computer: ${computerBooks.length})`;
+      } else {
+        message += `It's a tie! (You: ${playerBooks.length} books, Computer: ${computerBooks.length})`;
+      }
+      setStatus(message);
+      drawScene();
+    }
+
+    function setStatus(text) {
+      statusText.textContent = text;
+    }
+
+    // --- Layout helper for auto-scaling hands ---
+    function layoutHand(handLength, margin = 40, baseScale = 1) {
+      if (handLength === 0) {
+        return { scale: baseScale, startX: canvas.width / 2, spacing: 0, displayWidth: 0 };
+      }
+      const usableWidth = canvas.width - margin * 2;
+      const baseTotal = handLength * CARD_W + (handLength - 1) * CARD_SPACING;
+      let scale = Math.min(baseScale, usableWidth / baseTotal);
+      if (scale > 1) scale = 1;
+      const displayWidth = CARD_W * scale;
+      const spacing = CARD_SPACING * scale;
+      const totalWidth = scale * baseTotal;
+      const startX = (canvas.width - totalWidth) / 2;
+      return { scale, startX, spacing, displayWidth, totalWidth };
+    }
+
+    // --- Drawing UI on Canvas ---
+    function drawScene() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // background glow
+      const grad = ctx.createRadialGradient(
+        canvas.width / 2,
+        canvas.height / 2,
+        0,
+        canvas.width / 2,
+        canvas.height / 2,
+        canvas.width * 0.7
+      );
+      grad.addColorStop(0, "#020617");
+      grad.addColorStop(1, "#020617");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // table oval
+      ctx.beginPath();
+      ctx.ellipse(
+        canvas.width / 2,
+        canvas.height / 2,
+        canvas.width * 0.46,
+        canvas.height * 0.36,
+        0,
+        0,
+        Math.PI * 2
+      );
+      const tableGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      tableGrad.addColorStop(0, "#0f172a");
+      tableGrad.addColorStop(1, "#020617");
+      ctx.fillStyle = tableGrad;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+      ctx.lineWidth = 4;
+      ctx.stroke();
+
+      // center title
+      ctx.fillStyle = "#e5e7eb";
+      ctx.font = "20px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("Go Fish!", canvas.width / 2, 40);
+
+      // turn indicator
+      ctx.font = "14px system-ui";
+      let turnText = currentTurn === "player" ? "Your turn" : "Computer's turn";
+      ctx.fillStyle = currentTurn === "player" ? "#22c55e" : "#38bdf8";
+      ctx.fillText(turnText, canvas.width / 2, 60);
+
+      // deck (left center)
+      drawDeck();
+
+      // books and score
+      drawBooks();
+
+      // hands
+      drawComputerHand();
+      drawPlayerHand();
+
+      // bottom hint
+      ctx.font = "13px system-ui";
+      ctx.fillStyle = "rgba(226,232,240,0.85)";
+      ctx.fillText(
+        "Tip: Click a card in your hand to ask for that rank.",
+        canvas.width / 2,
+        canvas.height - 10
+      );
+    }
+
+    function drawDeck() {
+      const x = 80;
+      const y = canvas.height / 2 - CARD_H / 2 - 20;
+      const stackCount = Math.min(deck.length, 5);
+      for (let i = 0; i < stackCount; i++) {
+        drawCardBack(x + i * 2, y - i * 2, 1);
+      }
+
+      // "Deck" label
+      ctx.font = "13px system-ui";
+      ctx.fillStyle = "#e5e7eb";
+      ctx.textAlign = "center";
+      ctx.fillText("Deck", x + CARD_W / 2, y + CARD_H + 18);
+      ctx.font = "11px system-ui";
+      ctx.fillStyle = "rgba(148,163,184,0.9)";
+      ctx.fillText(`${deck.length} cards left`, x + CARD_W / 2, y + CARD_H + 33);
+    }
+
+    function drawBooks() {
+      const baseYPlayer = canvas.height - 190;
+      const baseYComp = 100;
+      const baseX = canvas.width - 320;
+
+      // Player books
+      ctx.textAlign = "left";
+      ctx.font = "14px system-ui";
+      ctx.fillStyle = "#22c55e";
+      ctx.fillText(`Your Books (${playerBooks.length})`, baseX, baseYPlayer - 16);
+      drawMiniBooks(playerBooks, baseX, baseYPlayer);
+
+      // Computer books
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillText(`Computer's Books (${computerBooks.length})`, baseX, baseYComp - 16);
+      drawMiniBooks(computerBooks, baseX, baseYComp);
+    }
+
+    function drawMiniBooks(books, startX, startY) {
+      const miniW = 26;
+      const miniH = 34;
+      const cols = 6;
+      for (let i = 0; i < books.length; i++) {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const x = startX + col * (miniW + 6);
+        const y = startY + row * (miniH + 6);
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.beginPath();
+        ctx.roundRect(0, 0, miniW, miniH, 5);
+        const g = ctx.createLinearGradient(0, 0, miniW, miniH);
+        g.addColorStop(0, "#4b5563");
+        g.addColorStop(1, "#1f2933");
+        ctx.fillStyle = g;
+        ctx.fill();
+        ctx.strokeStyle = "rgba(148,163,184,0.9)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = "#f9fafb";
+        ctx.font = "11px system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(books[i], miniW / 2, miniH / 2);
+        ctx.restore();
+      }
+    }
+
+    function drawComputerHand() {
+      const y = 90;
+      const hand = computerHand;
+
+      // label
+      ctx.font = "14px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillText("Computer's Hand", canvas.width / 2, y - 14);
+
+      const layout = layoutHand(hand.length, 40, 0.9);
+      const { scale, startX, spacing } = layout;
+
+      for (let i = 0; i < hand.length; i++) {
+        const x = startX + i * (CARD_W * scale + spacing - CARD_W * scale); // spacing already included
+        drawCardBack(x, y, scale);
+      }
+    }
+
+    function drawPlayerHand() {
+      const y = canvas.height - 150;
+      const hand = playerHand;
+
+      // label
+      ctx.font = "14px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#22c55e";
+      ctx.fillText("Your Hand", canvas.width / 2, y - 14);
+
+      playerCardZones = [];
+
+      const layout = layoutHand(hand.length, 40, 1);
+      const { scale, startX, spacing } = layout;
+      const displayWidth = CARD_W * scale;
+      const displayHeight = CARD_H * scale;
+
+      for (let i = 0; i < hand.length; i++) {
+        const x = startX + i * (displayWidth + spacing);
+        drawCardFace(x, y, hand[i], scale);
+        playerCardZones.push({
+          x,
+          y,
+          w: displayWidth,
+          h: displayHeight,
+          index: i,
+          rank: hand[i].rank
+        });
+      }
+    }
+
+    function drawCardBack(x, y, scale = 1) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(scale, scale);
+
+      ctx.beginPath();
+      ctx.roundRect(0, 0, CARD_W, CARD_H, 8);
+      const grad = ctx.createLinearGradient(0, 0, CARD_W, CARD_H);
+      grad.addColorStop(0, "#1e293b");
+      grad.addColorStop(1, "#0f172a");
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(148,163,184,0.9)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // pattern
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(4, 4, CARD_W - 8, CARD_H - 8, 6);
+      ctx.clip();
+      for (let i = -CARD_H; i < CARD_H; i += 9) {
+        ctx.beginPath();
+        ctx.moveTo(-10, i);
+        ctx.lineTo(CARD_W + 10, i + CARD_H);
+        ctx.strokeStyle = "rgba(56,189,248,0.4)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      ctx.restore();
+    }
+
+    function drawCardFace(x, y, card, scale = 1) {
+      const isRed = card.suit === "♥" || card.suit === "♦";
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(scale, scale);
+
+      // base
+      ctx.beginPath();
+      ctx.roundRect(0, 0, CARD_W, CARD_H, 8);
+      const grad = ctx.createLinearGradient(0, 0, CARD_W, CARD_H);
+      grad.addColorStop(0, "#f9fafb");
+      grad.addColorStop(1, "#e5e7eb");
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(148,163,184,0.9)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // rank & suit (corners)
+      ctx.fillStyle = isRed ? "#dc2626" : "#020617";
+      ctx.font = "13px system-ui";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(card.rank, 6, 4);
+      ctx.fillText(card.suit, 6, 20);
+
+      ctx.textAlign = "right";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(card.rank, CARD_W - 6, CARD_H - 18);
+      ctx.fillText(card.suit, CARD_W - 6, CARD_H - 4);
+
+      // big suit symbol
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "26px system-ui";
+      ctx.fillText(card.suit, CARD_W / 2, CARD_H / 2 - 4);
+
+      ctx.restore();
+    }
+
+    // --- Game Logic (Turns) ---
+    function startNewGame() {
+      deck = createDeck();
+      playerHand = [];
+      computerHand = [];
+      playerBooks = [];
+      computerBooks = [];
+      gameOver = false;
+      currentTurn = "player";
+
+      dealCards(playerHand, 7);
+      dealCards(computerHand, 7);
+
+      checkForBooks(playerHand, playerBooks);
+      checkForBooks(computerHand, computerBooks);
+
+      setStatus("New game started! It's your turn. Click a card to ask for that rank.");
+      drawScene();
+    }
+
+    function playerAsksForRank(rank) {
+      if (gameOver) return;
+      if (currentTurn !== "player") return;
+      if (!playerHand.some(c => c.rank === rank)) {
+        setStatus("You must ask for a rank you have in your hand.");
+        return;
+      }
+
+      setStatus(`You ask: "Do you have any ${rank}s?"`);
+      const taken = removeCardsOfRank(computerHand, rank);
+
+      if (taken.length > 0) {
+        playerHand.push(...taken);
+        const madeBook = checkForBooks(playerHand, playerBooks);
+        setTimeout(() => {
+          setStatus(
+            `Computer gives you ${taken.length} ${rank}${taken.length > 1 ? "s" : ""}. ` +
+            (madeBook ? "You completed a book! 🎉 " : "") +
+            `You get another turn.`
+          );
+          drawScene();
+          endGameIfNeeded();
+        }, 600);
+      } else {
+        setTimeout(() => {
+          setStatus(`Computer says: "Go Fish!" You draw a card...`);
+          drawScene();
+        }, 500);
+
+        setTimeout(() => {
+          const drawn = drawCardToHand(playerHand);
+          if (drawn) checkForBooks(playerHand, playerBooks);
+
+          let msg = "";
+          if (!drawn) {
+            msg = "The deck is empty. ";
+          } else {
+            msg = `You drew a ${drawn.rank}. `;
+          }
+
+          if (drawn && drawn.rank === rank) {
+            msg += "It's the rank you asked for, so you get another turn!";
+            setStatus(msg);
+            drawScene();
+            endGameIfNeeded();
+          } else {
+            msg += "Now it's the computer's turn.";
+            setStatus(msg);
+            currentTurn = "computer";
+            drawScene();
+            endGameIfNeeded();
+            if (!gameOver) {
+              setTimeout(computerTurn, 1100);
+            }
+          }
+        }, 1400);
+      }
+
+      drawScene();
+      endGameIfNeeded();
+    }
+
+    function computerTurn() {
+      if (gameOver) return;
+      if (currentTurn !== "computer") return;
+
+      // if computer has no cards but deck still has, draw one
+      if (computerHand.length === 0 && deck.length > 0) {
+        drawCardToHand(computerHand);
+        checkForBooks(computerHand, computerBooks);
+      }
+
+      if (computerHand.length === 0) {
+        currentTurn = "player";
+        setStatus("Computer has no cards left. Your turn.");
+        drawScene();
+        endGameIfNeeded();
+        return;
+      }
+
+      const randomCard = computerHand[Math.floor(Math.random() * computerHand.length)];
+      const rank = randomCard.rank;
+
+      setStatus(`Computer asks: "Do you have any ${rank}s?"`);
+      drawScene();
+
+      setTimeout(() => {
+        const taken = removeCardsOfRank(playerHand, rank);
+
+        if (taken.length > 0) {
+          computerHand.push(...taken);
+          const madeBook = checkForBooks(computerHand, computerBooks);
+          setStatus(
+            `You must give ${taken.length} ${rank}${taken.length > 1 ? "s" : ""} to the computer.` +
+            (madeBook ? " It completed a book!" : "") +
+            " Computer gets another turn."
+          );
+          drawScene();
+          endGameIfNeeded();
+          if (!gameOver) {
+            setTimeout(computerTurn, 1100);
+          }
+        } else {
+          setStatus("You say: \"Go Fish!\"");
+          drawScene();
+
+          setTimeout(() => {
+            const drawn = drawCardToHand(computerHand);
+            let msg = "";
+            if (!drawn) {
+              msg = "Computer tries to draw, but the deck is empty. ";
+            } else {
+              msg = "Computer draws a card. ";
+            }
+
+            if (drawn) checkForBooks(computerHand, computerBooks);
+
+            if (drawn && drawn.rank === rank) {
+              msg += "It drew the rank it asked for, so it goes again.";
+              setStatus(msg);
+              drawScene();
+              endGameIfNeeded();
+              if (!gameOver) {
+                setTimeout(computerTurn, 1100);
+              }
+            } else {
+              msg += "Now it's your turn.";
+              setStatus(msg);
+              currentTurn = "player";
+              drawScene();
+              endGameIfNeeded();
+            }
+          }, 1100);
+        }
+      }, 900);
+    }
+
+    // --- Mouse Handling ---
+    function handleCanvasClick(event) {
+      if (gameOver) return;
+      if (currentTurn !== "player") return;
+
+      const rect = canvas.getBoundingClientRect();
+      const mx = event.clientX - rect.left;
+      const my = event.clientY - rect.top;
+
+      for (const zone of playerCardZones) {
+        if (
+          mx >= zone.x &&
+          mx <= zone.x + zone.w &&
+          my >= zone.y &&
+          my <= zone.y + zone.h
+        ) {
+          const rank = zone.rank;
+          playerAsksForRank(rank);
+          return;
+        }
+      }
+    }
+
+    // --- Setup ---
+    document.getElementById("newGameBtn").addEventListener("click", startNewGame);
+    canvas.addEventListener("click", handleCanvasClick);
+
+    // start immediately
+    startNewGame();
+  </script>
+</body>
+</html>
