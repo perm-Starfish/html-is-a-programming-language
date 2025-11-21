@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Spaceship + Enemies + Star Trek Shield</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      color: #0f0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #hud {
+      margin-bottom: 8px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.7);
+      border: 1px solid #0f0;
+      font-size: 14px;
+      line-height: 1.4;
+      min-width: 380px;
+    }
+
+    #hud span.label {
+      color: #aaa;
+      margin-right: 4px;
+    }
+
+    canvas {
+      border-radius: 12px;
+      box-shadow: 0 0 20px rgba(0, 255, 0, 0.35);
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div><span class="label">Compass:</span><span id="directionText">None</span></div>
+    <div><span class="label">Pressed (NumPad):</span><span id="numpadText">[]</span></div>
+    <div><span class="label">Pressed (Arrows):</span><span id="arrowText">[]</span></div>
+    <div><span class="label">Hint:</span> NumPad 1–4,6–9 or Arrow keys to steer. Shift = torpedo, Space = laser.</div>
+  </div>
+
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const dirTextEl = document.getElementById('directionText');
+    const numpadTextEl = document.getElementById('numpadText');
+    const arrowTextEl = document.getElementById('arrowText');
+
+    // ================= INPUT STATE =================
+    const numpadKeysDown = new Set();   // '1','2','3','4','6','7','8','9'
+    const arrowKeysDown = new Set();    // 'Up','Down','Left','Right'
+    let shiftDown = false;
+    let laserActive = false;
+
+    // Numeric keypad: math coordinates (x right, y up)
+    const numpadVectors = {
+      '8': {x: 0,  y:  1},  // N
+      '9': {x: 1,  y:  1},  // NE
+      '6': {x: 1,  y:  0},  // E
+      '3': {x: 1,  y: -1},  // SE
+      '2': {x: 0,  y: -1},  // S
+      '1': {x: -1, y: -1},  // SW
+      '4': {x: -1, y:  0},  // W
+      '7': {x: -1, y:  1}   // NW
+    };
+
+    const arrowVectors = {
+      'Up':    {x: 0,  y:  1},  // N
+      'Right': {x: 1,  y:  0},  // E
+      'Down':  {x: 0,  y: -1},  // S
+      'Left':  {x: -1, y:  0}   // W
+    };
+
+    // ================ COMPASS DEFINITIONS =================
+    const compass16 = [
+      { name: 'N',   deg: 90 },
+      { name: 'NNE', deg: 67.5 },
+      { name: 'NE',  deg: 45 },
+      { name: 'ENE', deg: 22.5 },
+      { name: 'E',   deg: 0 },
+      { name: 'ESE', deg: 337.5 },
+      { name: 'SE',  deg: 315 },
+      { name: 'SSE', deg: 292.5 },
+      { name: 'S',   deg: 270 },
+      { name: 'SSW', deg: 247.5 },
+      { name: 'SW',  deg: 225 },
+      { name: 'WSW', deg: 202.5 },
+      { name: 'W',   deg: 180 },
+      { name: 'WNW', deg: 157.5 },
+      { name: 'NW',  deg: 135 },
+      { name: 'NNW', deg: 112.5 }
+    ];
+
+    const compass8Names = new Set(['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']);
+    const compass8 = compass16.filter(d => compass8Names.has(d.name));
+
+    function normalizeDeg(deg) {
+      deg = deg % 360;
+      if (deg < 0) deg += 360;
+      return deg;
+    }
+
+    function nearestDirection(deg, candidates) {
+      let best = candidates[0];
+      let bestDiff = 999;
+      for (const c of candidates) {
+        let diff = Math.abs(normalizeDeg(deg) - normalizeDeg(c.deg));
+        if (diff > 180) diff = 360 - diff;
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = c;
+        }
+      }
+      return best;
+    }
+
+    function compassDegToRad(degMath) {
+      return (90 - normalizeDeg(degMath)) * Math.PI / 180;
+    }
+
+    function getAngleFromVectors(vectors, keySet) {
+      if (keySet.size === 0) return null;
+      let x = 0, y = 0;
+      for (const k of keySet) {
+        const v = vectors[k];
+        if (v) {
+          x += v.x;
+          y += v.y;
+        }
+      }
+      if (x === 0 && y === 0) return null;
+      const rad = Math.atan2(y, x);
+      let deg = rad * 180 / Math.PI;
+      deg = normalizeDeg(deg);
+      return deg;
+    }
+
+    function computeCompassDirection() {
+      // NumPad has priority
+      if (numpadKeysDown.size > 0) {
+        const deg = getAngleFromVectors(numpadVectors, numpadKeysDown);
+        if (deg == null) return null;
+        const dir = nearestDirection(deg, compass16);
+        return {
+          label: dir.name,
+          angleRad: compassDegToRad(dir.deg)
+        };
+      }
+      // otherwise use arrows (8-point)
+      if (arrowKeysDown.size > 0) {
+        const deg = getAngleFromVectors(arrowVectors, arrowKeysDown);
+        if (deg == null) return null;
+        const dir = nearestDirection(deg, compass8);
+        return {
+          label: dir.name,
+          angleRad: compassDegToRad(dir.deg)
+        };
+      }
+      return null;
+    }
+
+    // ================= SHIP & GAME STATE =================
+    const ship = {
+      x: canvas.width / 2,
+      y: canvas.height / 2,
+      angle: 0,           // compass radians (0 = North, increasing clockwise)
+      targetAngle: 0,
+      radius: 25,
+      moveSpeed: 150      // FASTER player
+    };
+
+    const shieldRadius = ship.radius + 18; // radius of shield sphere (top view)
+    const rotationSpeed = 2 * Math.PI;     // 1 full rotation per second
+
+    const torpedoes = [];
+    const torpedoSpeed = 400;              // FASTER torpedoes
+
+    const enemies = [];
+    const enemyLasers = [];
+    const shieldHits = []; // {theta, life}
+
+    let enemySpawnTimer = 0;
+
+    // ================= STARFIELD =================
+    const stars = [];
+    const STAR_COUNT = 150;
+
+    function initStars() {
+      stars.length = 0;
+      for (let i = 0; i < STAR_COUNT; i++) {
+        stars.push({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height,
+          r: Math.random() * 1.5 + 0.5,
+          a: Math.random() * 2 * Math.PI,
+          twinkleSpeed: Math.random() * 2 + 1
+        });
+      }
+    }
+
+    initStars();
+
+    // ================= INPUT HANDLERS =================
+    window.addEventListener('keydown', (e) => {
+      const code = e.code;
+
+      if (
+        code.startsWith('Arrow') ||
+        code.startsWith('Numpad') ||
+        code === 'Space' ||
+        code.startsWith('Shift')
+      ) {
+        e.preventDefault();
+      }
+
+      if (code.startsWith('Numpad')) {
+        const digit = code.slice(-1);
+        if ('12346789'.includes(digit)) {
+          numpadKeysDown.add(digit);
+        }
+      }
+
+      if (code === 'ArrowUp') arrowKeysDown.add('Up');
+      if (code === 'ArrowDown') arrowKeysDown.add('Down');
+      if (code === 'ArrowLeft') arrowKeysDown.add('Left');
+      if (code === 'ArrowRight') arrowKeysDown.add('Right');
+
+      if (code === 'Space') {
+        laserActive = true;
+      }
+
+      if (code === 'ShiftLeft' || code === 'ShiftRight') {
+        if (!shiftDown) {
+          fireTorpedo();
+        }
+        shiftDown = true;
+      }
+
+      updateHUD();
+    });
+
+    window.addEventListener('keyup', (e) => {
+      const code = e.code;
+
+      if (code.startsWith('Numpad')) {
+        const digit = code.slice(-1);
+        if ('12346789'.includes(digit)) {
+          numpadKeysDown.delete(digit);
+        }
+      }
+
+      if (code === 'ArrowUp') arrowKeysDown.delete('Up');
+      if (code === 'ArrowDown') arrowKeysDown.delete('Down');
+      if (code === 'ArrowLeft') arrowKeysDown.delete('Left');
+      if (code === 'ArrowRight') arrowKeysDown.delete('Right');
+
+      if (code === 'Space') {
+        laserActive = false;
+      }
+
+      if (code === 'ShiftLeft' || code === 'ShiftRight') {
+        shiftDown = false;
+      }
+
+      updateHUD();
+    });
+
+    function updateHUD() {
+      numpadTextEl.textContent = '[' + Array.from(numpadKeysDown).join(', ') + ']';
+      arrowTextEl.textContent = '[' + Array.from(arrowKeysDown).join(', ') + ']';
+    }
+
+    // ================= HELPERS =================
+    function shortestAngularDifference(a, b) {
+      let diff = (b - a + Math.PI) % (2 * Math.PI) - Math.PI;
+      if (diff < -Math.PI) diff += 2 * Math.PI;
+      return diff;
+    }
+
+    function getShipNose() {
+      return {
+        x: ship.x + Math.sin(ship.angle) * ship.radius,
+        y: ship.y - Math.cos(ship.angle) * ship.radius
+      };
+    }
+
+    function getEnemyNose(enemy) {
+      return {
+        x: enemy.x + Math.sin(enemy.angle) * enemy.radius,
+        y: enemy.y - Math.cos(enemy.angle) * enemy.radius
+      };
+    }
+
+    function fireTorpedo() {
+      const nose = getShipNose();
+      const vx = Math.sin(ship.angle) * torpedoSpeed;
+      const vy = -Math.cos(ship.angle) * torpedoSpeed;
+      torpedoes.push({
+        x: nose.x,
+        y: nose.y,
+        vx,
+        vy
+      });
+    }
+
+    function angleToShip(x, y) {
+      const dx = ship.x - x;
+      const dy = ship.y - y;
+      // For our compass-angle system: dx = sin(angle), dy = -cos(angle)
+      return Math.atan2(dx, -dy);
+    }
+
+    // ============ ENEMIES (Step 4) ============
+    function spawnEnemy() {
+      const enemy = {
+        x: 0,
+        y: 0,
+        angle: 0,
+        targetAngle: 0,
+        radius: 12,          // smaller & cuter
+        moveSpeed: 130,      // FASTER enemies
+        fireCooldown: 1 + Math.random() * 2 // seconds until first shot
+      };
+
+      const side = Math.floor(Math.random() * 4);
+      const pad = 5; // small padding from the edge
+
+      if (side === 0) {         // top edge
+        enemy.x = Math.random() * canvas.width;
+        enemy.y = enemy.radius + pad;
+      } else if (side === 1) {  // right edge
+        enemy.x = canvas.width - enemy.radius - pad;
+        enemy.y = Math.random() * canvas.height;
+      } else if (side === 2) {  // bottom edge
+        enemy.x = Math.random() * canvas.width;
+        enemy.y = canvas.height - enemy.radius - pad;
+      } else {                  // left edge
+        enemy.x = enemy.radius + pad;
+        enemy.y = Math.random() * canvas.height;
+      }
+
+      // Avoid spawning directly on top of the player
+      const minDist = ship.radius + enemy.radius + 40;
+      const d = Math.hypot(enemy.x - ship.x, enemy.y - ship.y);
+      if (d < minDist) {
+        const nx = (enemy.x - ship.x) / (d || 1);
+        const ny = (enemy.y - ship.y) / (d || 1);
+        enemy.x = ship.x + nx * minDist;
+        enemy.y = ship.y + ny * minDist;
+      }
+
+      // Face toward the player to start with
+      enemy.angle = angleToShip(enemy.x, enemy.y);
+      enemy.targetAngle = enemy.angle;
+
+      enemies.push(enemy);
+    }
+
+    // ============ ENEMY LASERS (Step 5) ============
+    function fireEnemyLaser(enemy) {
+      const nose = getEnemyNose(enemy);
+      enemyLasers.push({
+        x: nose.x,
+        y: nose.y,
+        angle: enemy.angle,
+        maxLength: 800,
+        life: 0.4,           // seconds beam is visible
+        hitRegistered: false,
+        hitPoint: null
+      });
+    }
+
+    // Line (ray) from laser origin vs ship shield circle
+    function lineCircleIntersectionLaser(laser) {
+      const cx = ship.x;
+      const cy = ship.y;
+      const ox = laser.x;
+      const oy = laser.y;
+      const dx = Math.sin(laser.angle);
+      const dy = -Math.cos(laser.angle);
+      const R = shieldRadius;
+
+      const fx = ox - cx;
+      const fy = oy - cy;
+
+      const a = dx*dx + dy*dy; // ~1
+      const b = 2 * (fx*dx + fy*dy);
+      const c = fx*fx + fy*fy - R*R;
+
+      const disc = b*b - 4*a*c;
+      if (disc < 0) return null;
+
+      const sqrt = Math.sqrt(disc);
+      let t1 = (-b - sqrt) / (2*a);
+      let t2 = (-b + sqrt) / (2*a);
+
+      let t = null;
+      if (t1 >= 0 && t1 <= laser.maxLength) t = t1;
+      else if (t2 >= 0 && t2 <= laser.maxLength) t = t2;
+      if (t == null) return null;
+
+      return {
+        x: ox + dx * t,
+        y: oy + dy * t,
+        t
+      };
+    }
+
+    function addShieldHit(point) {
+      const dx = point.x - ship.x;
+      const dy = point.y - ship.y;
+      const theta = Math.atan2(dy, dx); // angle around sphere
+      shieldHits.push({
+        theta,
+        life: 1.0           // 1 -> 0
+      });
+    }
+
+    // Player laser vs circle (enemy)
+    function playerLaserHitsCircle(cx, cy, r) {
+      if (!laserActive) return false;
+
+      const nose = getShipNose();
+      const length = 1000;
+      const x1 = nose.x;
+      const y1 = nose.y;
+      const dx = Math.sin(ship.angle);
+      const dy = -Math.cos(ship.angle);
+
+      const fx = x1 - cx;
+      const fy = y1 - cy;
+
+      const a = dx*dx + dy*dy;
+      const b = 2 * (fx*dx + fy*dy);
+      const c = fx*fx + fy*fy - r*r;
+
+      const disc = b*b - 4*a*c;
+      if (disc < 0) return false;
+
+      const sqrt = Math.sqrt(disc);
+      let t1 = (-b - sqrt) / (2*a);
+      let t2 = (-b + sqrt) / (2*a);
+
+      let t = null;
+      if (t1 >= 0 && t1 <= length) t = t1;
+      else if (t2 >= 0 && t2 <= length) t = t2;
+
+      return t != null;
+    }
+
+    // ================= UPDATE LOOP =================
+    let lastTime = performance.now();
+
+    function gameLoop(timestamp) {
+      const dt = (timestamp - lastTime) / 1000;
+      lastTime = timestamp;
+
+      update(dt);
+      draw();
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    function update(dt) {
+      // 1. Player direction from keyboard
+      const dir = computeCompassDirection();
+      if (dir && typeof dir.angleRad === 'number') {
+        ship.targetAngle = dir.angleRad;
+        dirTextEl.textContent = dir.label;
+      } else {
+        dirTextEl.textContent = 'None';
+      }
+
+      // Rotate ship with same rule (max rotationSpeed)
+      let diff = shortestAngularDifference(ship.angle, ship.targetAngle);
+      let maxStep = rotationSpeed * dt;
+      if (Math.abs(diff) <= maxStep) {
+        ship.angle = ship.targetAngle;
+      } else {
+        ship.angle += Math.sign(diff) * maxStep;
+      }
+
+      // Move ship
+      const sdx = Math.sin(ship.angle) * ship.moveSpeed * dt;
+      const sdy = -Math.cos(ship.angle) * ship.moveSpeed * dt;
+      let nextX = ship.x + sdx;
+      let nextY = ship.y + sdy;
+      const r = ship.radius;
+
+      if (nextX < r) nextX = r;
+      if (nextX > canvas.width - r) nextX = canvas.width - r;
+      if (nextY < r) nextY = r;
+      if (nextY > canvas.height - r) nextY = canvas.height - r;
+
+      ship.x = nextX;
+      ship.y = nextY;
+
+      // 2. Update torpedoes
+      for (let i = torpedoes.length - 1; i >= 0; i--) {
+        const t = torpedoes[i];
+        t.x += t.vx * dt;
+        t.y += t.vy * dt;
+        if (
+          t.x < 0 || t.x > canvas.width ||
+          t.y < 0 || t.y > canvas.height
+        ) {
+          torpedoes.splice(i, 1);
+        }
+      }
+
+      // 3. Spawn enemies over time
+      enemySpawnTimer -= dt;
+      if (enemySpawnTimer <= 0) {
+        spawnEnemy();
+        enemySpawnTimer = 3 + Math.random() * 3; // every 3–6 seconds
+      }
+
+      // 4. Update enemies: chase player, rotate like player, move like player, maybe fire
+      for (const enemy of enemies) {
+        // Same rotation behavior as the player (shortest direction, limited speed)
+        enemy.targetAngle = angleToShip(enemy.x, enemy.y);
+
+        const ediff = shortestAngularDifference(enemy.angle, enemy.targetAngle);
+        const eMaxStep = rotationSpeed * dt;
+        if (Math.abs(ediff) <= eMaxStep) {
+          enemy.angle = enemy.targetAngle;
+        } else {
+          enemy.angle += Math.sign(ediff) * eMaxStep;
+        }
+
+        // Move in their facing direction, just like the player
+        const edx = Math.sin(enemy.angle) * enemy.moveSpeed * dt;
+        const edy = -Math.cos(enemy.angle) * enemy.moveSpeed * dt;
+
+        let ex = enemy.x + edx;
+        let ey = enemy.y + edy;
+        const er = enemy.radius;
+
+        // Edge clamp
+        if (ex < er) ex = er;
+        if (ex > canvas.width - er) ex = canvas.width - er;
+        if (ey < er) ey = er;
+        if (ey > canvas.height - er) ey = canvas.height - er;
+
+        // Keep them from overlapping / sticking on the ship body:
+        const dxToShip = ex - ship.x;
+        const dyToShip = ey - ship.y;
+        const distToShip = Math.hypot(dxToShip, dyToShip);
+        const minDist = ship.radius + er + 4; // little gap
+
+        if (distToShip < minDist && distToShip > 0) {
+          // Push enemy out to exactly minDist, along direction away from ship
+          const nx = dxToShip / distToShip;
+          const ny = dyToShip / distToShip;
+          ex = ship.x + nx * minDist;
+          ey = ship.y + ny * minDist;
+        }
+
+        enemy.x = ex;
+        enemy.y = ey;
+
+        // Fire lasers periodically (Step 5)
+        enemy.fireCooldown -= dt;
+        if (enemy.fireCooldown <= 0) {
+          fireEnemyLaser(enemy);
+          enemy.fireCooldown = 1.5 + Math.random() * 2;
+        }
+      }
+
+      // 5. Update enemy lasers & shield hits (Step 5 & 6)
+      for (let i = enemyLasers.length - 1; i >= 0; i--) {
+        const L = enemyLasers[i];
+        L.life -= dt;
+        if (L.life <= 0) {
+          enemyLasers.splice(i, 1);
+          continue;
+        }
+
+        if (!L.hitRegistered) {
+          const hit = lineCircleIntersectionLaser(L);
+          if (hit) {
+            L.hitRegistered = true;
+            L.hitPoint = { x: hit.x, y: hit.y, t: hit.t };
+            addShieldHit(hit); // add a Star Trek shield flash (Step 6)
+          }
+        }
+      }
+
+      // 6. Player weapons vs enemies (Step 4)
+      // Torpedoes vs enemies
+      for (let ei = enemies.length - 1; ei >= 0; ei--) {
+        const enemy = enemies[ei];
+        let destroyed = false;
+
+        for (let ti = torpedoes.length - 1; ti >= 0; ti--) {
+          const t = torpedoes[ti];
+          const d = Math.hypot(enemy.x - t.x, enemy.y - t.y);
+          if (d < enemy.radius + 3) {
+            enemies.splice(ei, 1);
+            torpedoes.splice(ti, 1);  // torpedo disappears too
+            destroyed = true;
+            break;
+          }
+        }
+        if (destroyed) continue;
+
+        // Player laser vs enemy
+        if (playerLaserHitsCircle(enemy.x, enemy.y, enemy.radius)) {
+          enemies.splice(ei, 1);
+        }
+      }
+
+      // 7. Update shield hit flashes
+      for (let i = shieldHits.length - 1; i >= 0; i--) {
+        const h = shieldHits[i];
+        h.life -= dt * 2.5; // fade fairly quickly
+        if (h.life <= 0) shieldHits.splice(i, 1);
+      }
+
+      // 8. Twinkle stars for background
+      for (const s of stars) {
+        s.a += s.twinkleSpeed * dt;
+      }
+    }
+
+    // ================== DRAWING ==================
+    function drawStarfield() {
+      ctx.fillStyle = 'black';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      for (const s of stars) {
+        const brightness = 0.6 + 0.4 * Math.sin(s.a);
+        ctx.globalAlpha = brightness;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1.0;
+    }
+
+    function drawShip() {
+      ctx.save();
+      ctx.translate(ship.x, ship.y);
+      ctx.rotate(ship.angle);
+
+      // Player ship: cyan delta-wing
+      ctx.beginPath();
+      ctx.moveTo(0, -28);
+      ctx.lineTo(18, 16);
+      ctx.lineTo(8, 8);
+      ctx.lineTo(0, 22);
+      ctx.lineTo(-8, 8);
+      ctx.lineTo(-18, 16);
+      ctx.closePath();
+
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = '#0ff';
+      ctx.fillStyle = '#0ff';
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#033';
+      ctx.stroke();
+
+      // cockpit
+      ctx.beginPath();
+      ctx.arc(0, -10, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#00f';
+      ctx.fill();
+
+      // engine glow
+      ctx.beginPath();
+      ctx.moveTo(0, 22);
+      ctx.lineTo(7, 28);
+      ctx.lineTo(-7, 28);
+      ctx.closePath();
+      ctx.fillStyle = '#f80';
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawEnemies() {
+      for (const enemy of enemies) {
+        ctx.save();
+        ctx.translate(enemy.x, enemy.y);
+        ctx.rotate(enemy.angle);
+
+        // Enemy ship: smaller, sleeker red interceptor
+        // Main hull
+        ctx.beginPath();
+        ctx.moveTo(0, -18);    // nose
+        ctx.lineTo(12, 4);     // right forward wing
+        ctx.lineTo(8, 14);     // right rear
+        ctx.lineTo(0, 10);     // tail
+        ctx.lineTo(-8, 14);    // left rear
+        ctx.lineTo(-12, 4);    // left forward wing
+        ctx.closePath();
+
+        const hullGrad = ctx.createLinearGradient(-12, -18, 12, 18);
+        hullGrad.addColorStop(0, '#ff8080');
+        hullGrad.addColorStop(0.5, '#ff2020');
+        hullGrad.addColorStop(1, '#800000');
+
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = '#f55';
+        ctx.fillStyle = hullGrad;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = '#400';
+        ctx.stroke();
+
+        // Slim cockpit stripe
+        ctx.beginPath();
+        ctx.moveTo(0, -16);
+        ctx.lineTo(0, -4);
+        ctx.strokeStyle = '#ffd040';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Engine glow
+        ctx.beginPath();
+        ctx.moveTo(0, 10);
+        ctx.lineTo(4, 16);
+        ctx.lineTo(-4, 16);
+        ctx.closePath();
+        ctx.fillStyle = '#ff6600';
+        ctx.fill();
+
+        ctx.restore();
+      }
+    }
+
+    function drawTorpedoes() {
+      for (const t of torpedoes) {
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff0';
+        ctx.fill();
+      }
+    }
+
+    // Player laser
+    function drawPlayerLaser() {
+      if (!laserActive) return;
+      const nose = getShipNose();
+      const length = 1000;
+      const endX = nose.x + Math.sin(ship.angle) * length;
+      const endY = nose.y - Math.cos(ship.angle) * length;
+
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(nose.x, nose.y);
+      ctx.lineTo(endX, endY);
+      ctx.strokeStyle = '#0f0';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      ctx.globalAlpha = 1.0;
+      ctx.beginPath();
+      ctx.moveTo(nose.x, nose.y);
+      ctx.lineTo(endX, endY);
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // Enemy lasers (Step 5 + shield-stop behavior for Step 6)
+    function drawEnemyLasers() {
+      for (const L of enemyLasers) {
+        const srcX = L.x;
+        const srcY = L.y;
+        const dx = Math.sin(L.angle);
+        const dy = -Math.cos(L.angle);
+        const fullEndX = srcX + dx * L.maxLength;
+        const fullEndY = srcY + dy * L.maxLength;
+
+        let endX = fullEndX;
+        let endY = fullEndY;
+        if (L.hitPoint) {
+          endX = L.hitPoint.x;
+          endY = L.hitPoint.y;
+        }
+
+        ctx.save();
+        ctx.globalAlpha = 0.9 * (L.life / 0.4);
+        ctx.beginPath();
+        ctx.moveTo(srcX, srcY);
+        ctx.lineTo(endX, endY);
+        ctx.strokeStyle = '#f44';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.globalAlpha = 1.0 * (L.life / 0.4);
+        ctx.beginPath();
+        ctx.moveTo(srcX, srcY);
+        ctx.lineTo(endX, endY);
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // Star Trek–style shield glows (Step 6)
+    function drawShieldEffects() {
+      if (shieldHits.length === 0) return;
+
+      const R = shieldRadius;
+
+      ctx.save();
+      ctx.translate(ship.x, ship.y);
+      ctx.scale(1, 0.65); // flatten vertically to make sphere look from top
+
+      // Draw each localized shield impact as a glowing patch on an ellipsoidal shell
+      for (const hit of shieldHits) {
+        const t = Math.max(0, Math.min(1, hit.life));
+        const px = Math.cos(hit.theta) * R;
+        const py = Math.sin(hit.theta) * R;
+
+        const maxGlow = R * 0.8;
+        const innerRadius = 2;
+        const outerRadius = maxGlow * (0.4 + 0.6 * t);
+
+        const grad = ctx.createRadialGradient(
+          px, py, innerRadius,
+          px, py, outerRadius
+        );
+
+        const alpha = 0.7 * t; // fade over time
+
+        grad.addColorStop(0.0, `rgba(0, 255, 255, ${alpha})`);
+        grad.addColorStop(0.3, `rgba(0, 180, 255, ${alpha * 0.8})`);
+        grad.addColorStop(0.7, `rgba(0, 80, 200, ${alpha * 0.4})`);
+        grad.addColorStop(1.0, `rgba(0, 0, 0, 0)`);
+
+        // Constrain to whole shield ellipse to feel like a curved surface
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(0, 0, R, R, 0, 0, Math.PI * 2);
+        ctx.clip();
+
+        ctx.beginPath();
+        ctx.ellipse(0, 0, R, R, 0, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
+    function draw() {
+      drawStarfield();
+      drawEnemies();
+      drawEnemyLasers();
+      drawTorpedoes();
+      drawPlayerLaser();
+      drawShip();
+      drawShieldEffects(); // on top for semi-obscured look
+    }
+
+    // Start
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
