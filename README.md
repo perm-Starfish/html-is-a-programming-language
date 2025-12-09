@@ -4,3 +4,4 @@ A whole bunch of in-class assignments from Steve's class.
 - go-fish game
 - spaceship shooting display
 - chatting system
+- wordsearch (midterm)
